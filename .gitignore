@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Downloaded models and datasets
+/models/
+/model_cache/
+/piper_voices/
+/data/
+/datasets/
+*.gguf
+*.onnx
+*.pt
+
+# Local llama.cpp checkout and build output
+/llama.cpp/
+/build/
+
+# Generated benchmark output
+/results_cv/
+/results_lite/
+/results_raw/
+/results_stt/
+/results_tts/
+/runs/
+/tts_out/
+/results.csv
+/stt_results.csv
+/tts_results.csv
+/cv_cls.png
+/cv_det.png
+/ram_vs_accuracy.png
+/stt_lite.png
+/stt_wer_vs_ram.png
+/tts_lite.png
+/tts_wer_vs_ram.png
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,7 @@
+lm-eval>=0.4.5
+huggingface_hub>=0.25.0
+llama-cpp-python[server]>=0.3.0
+psutil>=6.0.0
+requests>=2.32.0
+pandas>=2.2.0
+matplotlib>=3.9.0
