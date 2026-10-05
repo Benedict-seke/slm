@@ -34,6 +34,7 @@ env/
 /results_tts/
 /runs/
 /tts_out/
+/tts_out_vi/
 /results.csv
 /stt_results.csv
 /tts_results.csv
@@ -41,8 +42,11 @@ env/
 /cv_det.png
 /ram_vs_accuracy.png
 /stt_lite.png
+/stt_noise.png
+/stt_vi_intent.png
 /stt_wer_vs_ram.png
 /tts_lite.png
+/tts_vi_noise.png
 /tts_wer_vs_ram.png
 
 # Operating system files
