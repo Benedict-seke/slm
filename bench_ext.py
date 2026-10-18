@@ -1,9 +1,6 @@
 """Wrapper cho bộ benchmark mở rộng (bài băng tải). Dùng lại bench()/table()/update_row() của bench_common,
 nhưng chạy worker trong workers_ext.py (vẫn gọi được mọi worker cũ)."""
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import bench_common as bc
@@ -13,18 +10,8 @@ HERE = Path(__file__).resolve().parent
 
 
 def run_isolated(kind: str, params: dict, timeout: int = 3600) -> dict:
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="-1", TOKENIZERS_PARALLELISM="false",
-               PYTHONIOENCODING="utf-8", HF_HUB_DISABLE_SYMLINKS_WARNING="1")
-    try:
-        cp = subprocess.run([sys.executable, str(HERE / "workers_ext.py"), kind], input=json.dumps(params),
-                            capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return {"error": f"timeout sau {timeout}s"}
-    for line in reversed(cp.stdout.splitlines()):
-        if line.startswith("@@RESULT@@"):
-            return json.loads(line[len("@@RESULT@@"):])
-    return {"error": (cp.stderr or cp.stdout)[-1800:] or f"tiến trình con thoát mã {cp.returncode}"}
+    # dùng chung bản đã sửa trong bench_common (diệt cây tiến trình khi timeout, dọn hog mồ côi)
+    return bc.run_script("workers_ext.py", kind, params, timeout)
 
 
 bc.run_isolated = run_isolated  # bench() trong bench_common sẽ dùng bản này
@@ -35,7 +22,7 @@ def bx(subdir, name, kind, params, force=False):
     row = bench(subdir, name, kind, params, force)
     if "error" not in row:
         print("    ", {k: v for k, v in row.items()
-                       if k != "model" and not k.startswith("ram_") and not isinstance(v, (list, dict))})
+                       if k != "model" and not k.startswith(("ram_", "_")) and not isinstance(v, (list, dict))})
     return row
 
 

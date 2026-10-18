@@ -1,13 +1,28 @@
-"""Hạ tầng dùng chung cho stt_lite / tts_lite / cv_lite / ram_budget.
+"""Hạ tầng dùng chung cho stt_lite / tts_lite / cv_lite / ram_budget / latency / task benchmark.
 
-Mỗi model chạy trong một TIẾN TRÌNH CON (workers.py) để RAM không bị cộng dồn
+Mỗi model chạy trong một TIẾN TRÌNH CON (workers*.py) để RAM không bị cộng dồn
 từ model trước hoặc từ torch/CUDA/dataset của notebook.
+
+CHANGELOG so với bản cũ (các lỗi đã sửa):
+ 1. bench() cache theo HASH THAM SỐ: đổi tham số/worker -> tự chạy lại thay vì lặng lẽ trả kết quả cũ.
+    (File cache cũ không có hash vẫn được chấp nhận để không mất kết quả đã chạy.)
+ 2. Timeout/crash không còn để lại tiến trình mồ côi: diệt cả CÂY tiến trình con, và dọn các "hog" CPU
+    (`python -c "while True: pass"`) bị bỏ lại — trước đây chúng quay vô hạn và làm méo các lần đo sau.
+    Đồng thời stdout/stderr đi qua file tạm: hog mồ côi giữ pipe từng khiến subprocess.run TREO tới hết timeout.
+ 3. Ghi JSON nguyên tử (tmp + replace) và bỏ qua file cache hỏng thay vì làm sập notebook.
+ 4. run_script(script, ...) dùng chung: bench_ext / bench_lat không cần chép lại run_isolated (bản chép lại
+    từng bỏ qua mọi sửa lỗi ở đây).
+ 5. plot_tradeoff nhận xlabel (nhãn trục x trước đây luôn ghi 'RAM...' dù x là gì).
+ 6. render_ocr_set tôn trọng n/seed (trước đây bỏ qua nếu refs.json đã tồn tại dù n khác).
+ 7. Mọi open() có encoding và đóng file (Windows mặc định cp1252).
 """
+import hashlib
 import json
 import os
 import random
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -36,20 +51,93 @@ OCR_STRINGS = [
 ]
 
 
+# ------------------------------------------------------------ JSON an toàn
+def _read_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_json(path, obj):
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 # ------------------------------------------------------------ chạy cô lập
-def run_isolated(kind: str, params: dict, timeout: int = 3600) -> dict:
+def _kill_tree(proc):
+    try:
+        import psutil
+        parent = psutil.Process(proc.pid)
+        for c in parent.children(recursive=True):
+            try:
+                c.kill()
+            except psutil.Error:
+                pass
+        parent.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _reap_hogs():
+    """Diệt các hog CPU mồ côi do worker chết trước khi kịp dọn (chữ ký chính xác: -c 'while True: pass')."""
+    try:
+        import psutil
+    except ImportError:
+        return
+    for pr in psutil.process_iter(["cmdline"]):
+        try:
+            cl = pr.info.get("cmdline") or []
+            if len(cl) >= 3 and cl[-2] == "-c" and cl[-1] == "while True: pass":
+                pr.kill()
+        except Exception:
+            pass
+
+
+def run_script(script: str, kind: str, params: dict, timeout: int = 3600) -> dict:
+    """Chạy `python <script> <kind>` (params JSON qua stdin) trong tiến trình con; đọc dòng @@RESULT@@.
+    stdout/stderr ghi vào file tạm (không dùng pipe): nếu worker chết để lại hog mồ côi đang giữ pipe thì
+    communicate() sẽ treo tới hết timeout (bản cũ có thể treo cả giờ); với file tạm thì không bao giờ treo."""
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="-1", TOKENIZERS_PARALLELISM="false",
                PYTHONIOENCODING="utf-8", HF_HUB_DISABLE_SYMLINKS_WARNING="1")
-    try:
-        cp = subprocess.run([sys.executable, str(HERE / "workers.py"), kind], input=json.dumps(params),
-                            capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return {"error": f"timeout sau {timeout}s"}
-    for line in reversed(cp.stdout.splitlines()):
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        try:
+            proc = subprocess.Popen([sys.executable, str(HERE / script), kind], stdin=subprocess.PIPE,
+                                    stdout=fo, stderr=fe, env=env)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"không khởi chạy được {script}: {e}"}
+        try:
+            proc.stdin.write(json.dumps(params).encode("utf-8"))
+            proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=10)
+            except Exception:  # noqa: BLE001
+                pass
+            _reap_hogs()
+            return {"error": f"timeout sau {timeout}s"}
+        fo.seek(0)
+        fe.seek(0)
+        out = fo.read().decode("utf-8", "replace")
+        err = fe.read().decode("utf-8", "replace")
+    for line in reversed(out.splitlines()):
         if line.startswith("@@RESULT@@"):
             return json.loads(line[len("@@RESULT@@"):])
-    return {"error": (cp.stderr or cp.stdout)[-1800:] or f"tiến trình con thoát mã {cp.returncode}"}
+    _reap_hogs()
+    return {"error": (err or out)[-1800:] or f"tiến trình con thoát mã {proc.returncode}"}
+
+
+def run_isolated(kind: str, params: dict, timeout: int = 3600) -> dict:
+    return run_script("workers.py", kind, params, timeout)
 
 
 def _path(subdir, name):
@@ -59,17 +147,34 @@ def _path(subdir, name):
     return d / f"{safe}.json"
 
 
+def _phash(kind, params) -> str:
+    blob = json.dumps([kind, params], sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()[:10]
+
+
 def bench(subdir: str, name: str, kind: str, params: dict, force: bool = False) -> dict:
-    """Chạy 1 model cô lập; dùng cache JSON nếu đã có (trừ khi force=True)."""
+    """Chạy 1 model cô lập; dùng cache JSON nếu đã có VÀ tham số không đổi (trừ khi force=True)."""
     p = _path(subdir, name)
+    h = _phash(kind, params)
     if p.exists() and not force:
-        return json.load(open(p, encoding="utf-8"))
+        try:
+            row = _read_json(p)
+            if row.get("model") not in (None, name):
+                # hai tên khác nhau cho cùng tên file (ký tự đặc biệt bị đổi thành '_') -> không được dùng nhầm cache
+                print(f"[warn] {p.name} đang thuộc '{row.get('model')}', trùng tên file với '{name}' "
+                      f"— chạy lại và ghi đè; hãy đặt tên cấu hình khác nhau ở ký tự chữ/số.")
+            elif row.get("_phash") in (None, h):  # None = file cũ chưa có hash -> chấp nhận
+                return row
+            else:
+                print(f"[stale] {name}: tham số đã đổi so với lần chạy trước -> chạy lại")
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] cache hỏng {p.name} ({e}) -> chạy lại")
     res = run_isolated(kind, params)
     if "error" in res:
         print(f"[ERROR] {name}:\n{res['error']}\n")
         return {"model": name, "error": res["error"][-300:]}
-    row = {"model": name, **res}
-    json.dump(row, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    row = {"model": name, **res, "_phash": h}
+    _write_json(p, row)
     print(f"[done] {name}: " + ", ".join(f"{k}={v}" for k, v in row.items()
                                           if k in ("ram_total_peak_mb", "ram_peak_mb", "wer", "cer", "top1_acc",
                                                    "map50_95", "rtf", "roundtrip_wer", "ms_per_image")))
@@ -79,17 +184,24 @@ def bench(subdir: str, name: str, kind: str, params: dict, force: bool = False) 
 def update_row(subdir: str, name: str, **kw):
     p = _path(subdir, name)
     if p.exists():
-        row = json.load(open(p, encoding="utf-8"))
+        row = _read_json(p)
         row.update(kw)
-        json.dump(row, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+        _write_json(p, row)
 
 
 def table(subdir: str) -> pd.DataFrame:
-    rows = [json.load(open(f, encoding="utf-8")) for f in sorted((RESULTS / subdir).glob("*.json"))]
-    return pd.DataFrame(rows)
+    rows = []
+    for f in sorted((RESULTS / subdir).glob("*.json")):
+        try:
+            rows.append(_read_json(f))
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] bỏ qua file hỏng {f.name}: {e}")
+    df = pd.DataFrame(rows)
+    return df.drop(columns=[c for c in df.columns if c.startswith("_")], errors="ignore")
 
 
-def plot_tradeoff(df, x, y, title, ylabel, fname):
+def plot_tradeoff(df, x, y, title, ylabel, fname,
+                  xlabel="RAM tổng đỉnh của 1 tiến trình độc lập (MB)  — thấp hơn = tốt hơn"):
     import matplotlib.pyplot as plt
     ok = df.dropna(subset=[x, y])
     if ok.empty:
@@ -99,7 +211,7 @@ def plot_tradeoff(df, x, y, title, ylabel, fname):
     ax.scatter(ok[x], ok[y], s=80)
     for _, r in ok.iterrows():
         ax.annotate(r["model"], (r[x], r[y]), textcoords="offset points", xytext=(6, 4), fontsize=8)
-    ax.set_xlabel("RAM tổng đỉnh của 1 tiến trình độc lập (MB)  — thấp hơn = tốt hơn")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     fig.tight_layout()
@@ -124,7 +236,7 @@ def prep_librispeech(n: int = 200, outdir: str = "data/librispeech") -> str:
     from datasets import Audio, load_dataset
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    if (out / "refs.json").exists() and len(json.load(open(out / "refs.json"))) >= n:
+    if (out / "refs.json").exists() and len(_read_json(out / "refs.json")) >= n:
         return str(out)
     ds = load_dataset("openslr/librispeech_asr", data_dir="clean", split="test", streaming=True,
                       revision="refs/convert/parquet").cast_column("audio", Audio(decode=False))
@@ -133,7 +245,8 @@ def prep_librispeech(n: int = 200, outdir: str = "data/librispeech") -> str:
         arr, sr = sf.read(io.BytesIO(ex["audio"]["bytes"]), dtype="float32")
         sf.write(str(out / f"{i}.wav"), arr, sr)
         refs.append({"file": f"{i}.wav", "text": ex["text"]})
-    json.dump(refs, open(out / "refs.json", "w", encoding="utf-8"))
+    with open(out / "refs.json", "w", encoding="utf-8") as f:
+        json.dump(refs, f)
     return str(out)
 
 
@@ -141,7 +254,7 @@ def prep_imagenet(n: int = 500, outdir: str = "data/imagenet") -> str:
     from datasets import load_dataset
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    if (out / "labels.json").exists() and len(json.load(open(out / "labels.json"))) >= n:
+    if (out / "labels.json").exists() and len(_read_json(out / "labels.json")) >= n:
         return str(out)
     hf_login()
     ds = load_dataset("ILSVRC/imagenet-1k", split="validation", streaming=True)
@@ -149,7 +262,8 @@ def prep_imagenet(n: int = 500, outdir: str = "data/imagenet") -> str:
     for i, ex in enumerate(ds.take(n)):
         ex["image"].convert("RGB").save(out / f"{i}.jpg", quality=95)
         items.append({"file": f"{i}.jpg", "label": int(ex["label"])})
-    json.dump(items, open(out / "labels.json", "w"))
+    with open(out / "labels.json", "w", encoding="utf-8") as f:
+        json.dump(items, f)
     return str(out)
 
 
@@ -159,8 +273,11 @@ def render_ocr_set(outdir: str = "data/ocr", n: int = 40, seed: int = 0) -> str:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
-    if (out / "refs.json").exists():
-        return str(out)
+    meta = out / "meta.json"
+    if (out / "refs.json").exists() and meta.exists():
+        m = _read_json(meta)
+        if m.get("n") == n and m.get("seed") == seed:
+            return str(out)
     rng, nrng = random.Random(seed), np.random.default_rng(seed)
     fonts = [r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\arial.ttf", "DejaVuSansMono.ttf", "DejaVuSans.ttf"]
     refs = []
@@ -184,5 +301,7 @@ def render_ocr_set(outdir: str = "data/ocr", n: int = 40, seed: int = 0) -> str:
         arr = np.asarray(img).astype(np.float32) + nrng.normal(0, rng.uniform(2, 12), (img.height, img.width, 3))
         Image.fromarray(np.clip(arr, 0, 255).astype("uint8")).save(out / f"{i}.png")
         refs.append({"file": f"{i}.png", "text": text})
-    json.dump(refs, open(out / "refs.json", "w", encoding="utf-8"))
+    with open(out / "refs.json", "w", encoding="utf-8") as f:
+        json.dump(refs, f, ensure_ascii=False)
+    _write_json(meta, {"n": n, "seed": seed})
     return str(out)

@@ -32,8 +32,10 @@ env/
 /results_raw/
 /results_stt/
 /results_tts/
+/results_sim/
 /runs/
 /tts_out/
+/tts_out_en/
 /tts_out_vi/
 /results.csv
 /stt_results.csv
@@ -41,6 +43,7 @@ env/
 /cv_cls.png
 /cv_det.png
 /ram_vs_accuracy.png
+/task_score_vs_ram.png
 /stt_lite.png
 /stt_noise.png
 /stt_vi_intent.png
