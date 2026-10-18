@@ -1,11 +1,11 @@
 # Conveyor Bench — bộ benchmark cho "Offline AI Assistant for Conveyor Belt Manufacturing" (Arduino UNO Q)
 
-Tài liệu này mô tả **mọi thứ đang có trong thư mục**: file nào của bạn, file nào do mình viết, chạy thế nào, đo cái gì,
-và **chưa** đo được cái gì. Ngôn ngữ: tiếng Anh cho dữ liệu/lệnh (tiếng Việt thêm sau nếu khách hàng cần).
+Tài liệu này mô tả các benchmark trong thư mục, cách chạy, số liệu cần đọc và các giới hạn còn lại. Báo cáo kết quả gần nhất:
+[BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md).
 
-> Trạng thái thật: các script mình viết chỉ được kiểm thử bằng **mock/dữ liệu giả** (môi trường của mình không tải được
-> HuggingFace/Zenodo và không có `workers.py` của bạn). **Chưa có script nào được chạy với model thật hoặc dataset thật.**
-> Lần chạy đầu có thể lộ lỗi nhỏ (tên thư mục trong file nén, định dạng video...) — gửi nguyên thông báo lỗi để sửa.
+> Trạng thái 2026-10-18: đã chạy benchmark SLM, STT/TTS, mô phỏng vòng kín, cascade và các kiểm tra vision trên PC Windows.
+> Các số đo model/runtime là trên PC, **không phải trên Arduino UNO Q**. Bộ lệnh tiếng Việt hiện có chủ yếu tổng hợp; kiểm tra tiếng nói
+> người thật mới dùng từ đơn tiếng Anh từ Speech Commands, không đại diện câu lệnh tiếng Việt trong xưởng.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -28,11 +28,11 @@ Nguyên tắc chấm: nhãn do **luật xác định** sinh ra (không dùng LLM
 
 ```bash
 pip install pandas numpy soundfile librosa faster-whisper llama-cpp-python onnxruntime opencv-python-headless \
-            psutil matplotlib lm-eval piper-tts      # tuỳ khối bạn chạy; không cần hết
+            psutil matplotlib lm-eval transformers accelerate piper-tts      # tuỳ khối bạn chạy; không cần hết
 ```
 * `arbiter.py`, `test_arbiter.py`, `conveyor_data.py`, `sim_closed_loop.py` **chỉ dùng thư viện chuẩn** → chạy được ngay, không cần model.
-* Các worker (`workers_*.py`) `import workers` — file **`workers.py` của bạn** (định nghĩa `Meter`, `_load_refs`, `_norm`, `_wer`, `_ensure_vosk`
-  và các kind gốc `stt_fw`, `tts_piper`, `cls_ort`...). **File này không có trong thư mục này**: phải nằm cạnh các file khác khi chạy.
+* Các worker mở rộng (`workers_*.py`) dùng lại `workers.py` trong workspace (định nghĩa `Meter`, `_load_refs`, `_norm`, `_wer`, `_ensure_vosk`
+  và các kind gốc như `stt_fw`, `tts_piper`, `cls_ort`).
 * Mô hình SLM: file `.gguf` (vd `model_cache/qwen2.5-0.5b-instruct-q4_k_m.gguf`).
 
 ---------------------------------------------------------------------------------------------------
@@ -46,6 +46,7 @@ pip install pandas numpy soundfile librosa faster-whisper llama-cpp-python onnxr
 | `bench_ext.py` + `workers_ext.py` | STT/TTS/CV mở rộng: `stt_noise`, `stt_cmd`, `tts_quality`, `tts_judge`, `cv_latency`, `cls_corrupt`, `det_corrupt`, `cv_blockage`, `e2e` |
 | `bench_lat.py` + `workers_lat.py` | `tts_correct`, `slm_latency`, `e2e_full`; bộ lệnh tiếng Anh `EN_VARIANTS`, `make_en_commands()` |
 | `workers_task.py` | `slm_task`: benchmark tác vụ SLM (A/B/C) |
+| `model_catalog.py` | Danh mục GGUF dùng chung cho benchmark tổng quát, latency và tác vụ; tải thủ công theo tên model |
 | `conveyor_data.py` | Sinh dữ liệu + prompt + bộ chấm cho Task A/B/C (seed cố định, hash `b1a3d87fdf`); `--selftest` |
 | `workers.py`, `record_commands.py`, các notebook `.ipynb` | Ở máy bạn (không có ở đây) |
 
@@ -84,6 +85,26 @@ Gọi kiểu: `bx("thư_mục_kết_quả", "tên_model", "<kind>", {params})` �
 | (lm-eval trong notebook của bạn) | Độ chính xác chung + RAM GGUF | — |
 | `slm_latency` | Thời gian load, TTFT, tok/s, tổng thời gian; theo độ dài ngữ cảnh, có/không prefix-cache; chịu tải nền, giới hạn lõi | `gguf`, `threads`, `cpus`, `hog_procs` |
 | `slm_task` | **Task A** chọn tool (268 câu; negation, override, ASR-noise 0/1/2) · **Task B** SLM tự phán restart an toàn? (120 ca; **Dangerous Action Rate**) · **Task C** chẩn đoán vì sao dừng (105 ca; cause accuracy, biết nói UNKNOWN, **hallucination/grounding** bằng bộ kiểm claim xác định) | `gguf`, `tasks`, `limit`, `constrained`, `ablate` |
+
+Danh sách SLM trong `edge_slm_benchmark.ipynb`, `latency_project.ipynb` và
+`conveyor_task_eval.ipynb` lấy chung từ `model_catalog.py`. Catalog có Qwen3
+(0.6B, 1.7B, 4B), Arch-Agent (1.5B, 3B), xLAM-2-1B, Gemma 3 1B,
+Llama 3.2 1B, Phi-4 Mini, Phi-3.5 Mini, Gemma 4 E4B, Llama 4 Scout và
+các baseline cũ.
+Các notebook latency/tác vụ chỉ dùng GGUF đã có trong `model_cache`; để tải
+model cụ thể, thêm tên trong `DOWNLOAD_MODELS` ở notebook. Riêng Llama 4
+Scout là model 109B tổng (17B active), gồm nhiều shard khoảng 65 GB, cần
+chấp nhận license Meta và bị bỏ qua khi chạy danh sách benchmark thông thường.
+Các notebook latency/tác vụ cũng bỏ qua model `manual_only` trừ khi bật
+`INCLUDE_MANUAL_MODELS` sau khi kiểm tra phần cứng và license.
+Một số model cũng có license hạn chế hoặc yêu cầu chấp nhận điều khoản trước khi
+tải; hãy kiểm tra `note` trong catalog trước khi dùng.
+
+Các notebook tạo biểu đồ tập trung vào so sánh có ý nghĩa sau khi benchmark
+chạy xong: `edge_slm_benchmark.ipynb` lưu `ram_vs_accuracy.png`,
+`latency_project.ipynb` lưu `slm_latency_comparison.png` (TTFT và tốc độ sinh),
+`conveyor_task_eval.ipynb` lưu `task_accuracy_by_model.png` và
+`task_safety_rates_by_model.png` (tỷ lệ lỗi/an toàn, thấp hơn là tốt hơn).
 
 ### 4.3 TTS
 | kind | Đo |
@@ -165,7 +186,7 @@ Ghi vào `data/en_cascade_real/refs.json` (nhãn `intent` = tên tool). Khuyến
 > trước đó chỉ chấp nhận nhãn ngắn (`stop`, `restart`...) và sẽ báo lỗi "intent lạ". Giờ chấp nhận cả hai. `run_cascade.py` cũng được sửa để đọc
 > kết quả phẳng của worker (trước đó đọc khoá `rows` không tồn tại). `cascade_core.py` (đường *hybrid*, các chỉ số `unintended_start`...)
 > là thiết kế đời đầu, **chưa nối vào worker** — chỉ `record_cascade.py` và `run_cascade.py --make-synthetic` còn dùng `pick_variants` của nó.
-> Hai sửa này **chưa chạy với model thật**.
+> Đã chạy cascade với faster-whisper `small.en` + Qwen2.5-0.5B trên câu lệnh tổng hợp; vẫn cần xác nhận bằng ghi âm operator thật.
 
 ---------------------------------------------------------------------------------------------------
 

@@ -11,6 +11,12 @@ env/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+.coverage
+.coverage.*
+/coverage.xml
+/htmlcov/
+/dist/
+*.egg-info/
 
 # Downloaded models and datasets
 /models/
