@@ -120,6 +120,32 @@ chạy xong: `edge_slm_benchmark.ipynb` lưu `ram_vs_accuracy.png`,
 | `cls_corrupt` / `det_corrupt` | Top-1 / mAP YOLO dưới tối/sáng/mờ/nhiễu/jpeg |
 | `cv_blockage` | Phát hiện kẹt trên video băng tải **tổng hợp**: delay, tỉ lệ phát hiện, báo động giả, ms/khung |
 | `eval_belt_video.py` | Cùng detector trên **video thật** → báo động giả/phút, trễ phát hiện dừng (không đo được "kẹt thật", xem §8) |
+| `eval_mvtec_ad.py` | So sánh 3 baseline anomaly + MobileNetV3-Small/Large và EfficientNet-Lite0 trên MVTec AD |
+
+MVTec AD được giải nén thành các thư mục category riêng (`bottle`, `cable`, ...),
+mỗi category có `train/good`, `test/` và `ground_truth/`. Script tự tìm category
+đặt trực tiếp trong `data/` (hoặc chỉ định thư mục khác bằng `--root`):
+
+```bash
+python eval_mvtec_ad.py                                      # mọi category, 3 CNN + 3 baseline
+python eval_mvtec_ad.py --categories bottle metal_nut         # chọn category
+python eval_mvtec_ad.py --classifiers mobilenet_v3_small efficientnet_lite0
+```
+
+Ngoài ba baseline truyền thống (`rgb_gaussian`, `rgb_spatial_knn`,
+`texture_gaussian`), script dùng các ONNX ImageNet classifier sẵn có trong
+`models/cv/`: MobileNetV3-Small (~9.7 MiB), MobileNetV3-Large (~20.9 MiB) và
+EfficientNet-Lite0 (~17.7 MiB). Với mỗi CNN, vector logits 1000 lớp làm
+descriptor ảnh; nearest-neighbor tới tối đa 32 ảnh `train/good` tạo anomaly
+score. Đây là transfer baseline nhẹ, **không phải model anomaly chuyên biệt
+đã train/fine-tune trên MVTec**. Nó chỉ cho image AUROC; pixel AUROC để trống
+vì classifier global không định vị vùng lỗi. CSV ghi kích thước ONNX và thời
+gian inference trung bình trên PC; thời gian không đại diện cho UNO Q.
+
+YOLO là object detector (COCO), không phải anomaly detector. mAP COCO không
+đo được lỗi sản phẩm trong MVTec, nên không dùng confidence YOLO như thể đó là
+điểm defect. Hãy dùng benchmark YOLO/COCO riêng để so khả năng phát hiện vật
+thể; kết quả MVTec này so khả năng biểu diễn/nhận ra ảnh bất thường.
 
 ### 4.5 Chuỗi & hệ thống
 | kind / script | Đo |

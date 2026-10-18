@@ -104,6 +104,16 @@ Không thấy false-stop trong 90 negative clips, nhưng cận trên 4,1% vẫn 
 
 Chi phí xử lý là 0,124–0,716 ms/frame trên PC; kết quả hard-case cho thấy không thể lấy “100% stuck dễ” làm độ chính xác camera thực tế. YOLO11n-640 có mAP50-95 0,505 trên COCO, nhưng đó không phải nhãn băng tải. Output 70% trong `eval_vision_industrial.py` không được tính là điểm model: kiểm tra mã cho thấy nhãn/prediction QA bị dựng sẵn, không lấy từ dự đoán ONNX.
 
+Đã chạy đủ 15 category MVTec AD. Ba baseline one-class truyền thống ở 128×128 đạt macro image/pixel AUROC lần lượt: RGB Gaussian **0,6896/0,7284**, RGB spatial KNN **0,7151/0,7838**, texture Gaussian **0,6679/0,7674**. Bổ sung ba CNN ImageNet nhẹ làm image descriptor (input 224×224), rồi tính khoảng cách KNN tới tối đa 32 ảnh `train/good`:
+
+| CNN classifier | ONNX size | Image AUROC macro | Pixel AUROC | CPU inference/image |
+|---|---:|---:|---:|---:|
+| MobileNetV3-Small | 9,71 MiB | 0,8097 | N/A | 2,26 ms |
+| MobileNetV3-Large | 20,90 MiB | 0,8532 | N/A | 4,91 ms |
+| EfficientNet-Lite0 | 17,70 MiB | 0,8643 | N/A | 6,13 ms |
+
+Macro AUROC là trung bình đều trên 15 category; inference đo trên PC, không đại diện UNO Q. CNN dùng logits toàn ảnh nên không cho anomaly map/pixel AUROC. Đây là transfer baseline từ ImageNet, không fine-tune trên MVTec và chưa phải anomaly model chuyên dụng. YOLO11n ở đây là COCO object detector, không được tính như anomaly detector vì confidence detection không đo nhãn lỗi MVTec. Các điểm và kích thước theo từng category/model nằm trong `results_cv/mvtec_ad.csv`. Kết quả chỉ giúp sàng lọc model nhẹ; cần kiểm thử trên camera/dây chuyền thật trước khi triển khai.
+
 ### Mô phỏng vòng kín / safety
 
 - Kịch bản vòng kín chính: 8/8 bước PASS.
